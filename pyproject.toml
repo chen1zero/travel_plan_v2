@@ -1,0 +1,27 @@
+[project]
+name = "travel-plan-v2"
+version = "0.1.0"
+description = "LangGraph multi-agent travel planning harness with a Vue web app"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.116.0,<1.0.0",
+    "langgraph>=1.2.9,<2.0.0",
+    "langsmith>=0.10.18,<1.0.0",
+    "openai>=2.0.0,<3.0.0",
+    "python-dotenv>=1.0.0,<2.0.0",
+    "uv>=0.11.0,<1.0",
+    "uvicorn[standard]>=0.35.0,<1.0.0",
+]
+
+[project.scripts]
+travel-plan-v2 = "agent_app.main:main"
+
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agent_app*"]
+exclude = ["tests*", "frontend*", "src*"]

@@ -1,0 +1,18 @@
+services:
+  travel-api:
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      API_HOST: 0.0.0.0
+      API_PORT: "8000"
+      TRAVEL_API_DB_PATH: /data/travel_plan.db
+    ports:
+      - "8000:8000"
+    volumes:
+      - travel-plan-data:/data
+    restart: unless-stopped
+
+volumes:
+  travel-plan-data:
