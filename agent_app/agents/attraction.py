@@ -112,13 +112,13 @@ class AttractionSearchAgent(SimpleAgent):
         normalized_query = query.strip()
         if not normalized_query:
             raise ValueError("query 不能为空")
-        self._minimum_candidate_count = _requested_day_count(
-            normalized_query
+        self._minimum_candidate_count = min(
+            40, _requested_day_count(normalized_query) * 2
         )
         return super().run(
             f"旅行需求：{normalized_query}\n"
             f"至少返回 {self._minimum_candidate_count} 个不同景点候选，"
-            "以保证每天都能安排不重复景点。"
+            "以保证每天至少有两个不重复候选可供 Planner 取舍。"
         )
 
     def _output_validation_error(self, value: str) -> Optional[str]:

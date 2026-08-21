@@ -102,6 +102,8 @@ class PlannerAgentTests(unittest.TestCase):
         self.assertIn("600 米", PLANNER_SYSTEM_PROMPT)
         self.assertIn("previous_plan", PLANNER_SYSTEM_PROMPT)
         self.assertIn("修订模式", PLANNER_SYSTEM_PROMPT)
+        self.assertIn("budget_only_increase", PLANNER_SYSTEM_PROMPT)
+        self.assertIn("严禁调用", PLANNER_SYSTEM_PROMPT)
 
     def test_revision_mode_passes_previous_plan_and_change_analysis(self):
         llm = _FakeLLM(
@@ -137,6 +139,84 @@ class PlannerAgentTests(unittest.TestCase):
         self.assertEqual("revision", payload["mode"])
         self.assertEqual(previous_plan, payload["previous_plan"])
         self.assertEqual(analysis, payload["change_analysis"])
+
+    def test_budget_only_revision_adds_hard_acceptance_constraints(self):
+        llm = _FakeLLM([LLMResponse(finish_reason="stop", content="{}")])
+        agent = PlannerAgent(llm)
+        analysis = {
+            "mode": "revision",
+            "preservation": {
+                "budget_only_increase": True,
+                "forbid_new_route_queries": True,
+            },
+        }
+
+        agent.run(
+            original_request="预算提高到 8000",
+            attractions="上一版景点",
+            weather="上一版天气",
+            hotels="刷新后的酒店候选",
+            previous_plan={"selected_hotel": {"name": "上一版酒店"}},
+            change_analysis=analysis,
+            revision_mode=True,
+        )
+
+        payload = json.loads(llm.messages[0][1]["content"].split("：\n", 1)[1])
+        constraints = payload["revision_acceptance_constraints"]
+        self.assertTrue(any("selected_hotel" in value for value in constraints))
+        self.assertTrue(any("不得调用 compare_route_options" in value for value in constraints))
+
+    def test_budget_only_revision_blocks_route_handler_execution(self):
+        llm = _FakeLLM(
+            [
+                LLMResponse(
+                    finish_reason="tool_calls",
+                    tool_calls=(
+                        ToolCall(
+                            id="blocked-route",
+                            name=ROUTE_OPTIONS_TOOL_NAME,
+                            arguments=(
+                                '{"origin_address":"原酒店，原地址",'
+                                '"destination_address":"原景点，原地址",'
+                                '"origin_city":"北京",'
+                                '"destination_city":"北京"}'
+                            ),
+                        ),
+                    ),
+                ),
+                LLMResponse(finish_reason="stop", content="{}"),
+            ]
+        )
+        calls = []
+        agent = PlannerAgent(llm)
+        agent.add_tool(
+            lambda **arguments: calls.append(arguments),
+            schema=ROUTE_OPTIONS_TOOL_SCHEMA,
+        )
+
+        result = agent.run(
+            original_request="预算提高到 8000",
+            attractions="上一版景点",
+            weather="上一版天气",
+            hotels="刷新后的酒店候选",
+            previous_plan={"selected_hotel": {"name": "上一版酒店"}},
+            change_analysis={
+                "preservation": {
+                    "budget_only_increase": True,
+                    "forbid_new_route_queries": True,
+                }
+            },
+            revision_mode=True,
+        )
+
+        self.assertEqual("{}", result)
+        self.assertEqual([], calls)
+        tool_message = next(
+            message
+            for message in llm.messages[1]
+            if message.get("role") == "tool"
+        )
+        self.assertIn("不得重新查询", tool_message["content"])
 
     def test_run_queries_routes_then_returns_plan(self):
         llm = _FakeLLM(

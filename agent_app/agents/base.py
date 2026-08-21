@@ -246,6 +246,51 @@ class SimpleAgent:
                     continue
                 messages.append(response.to_assistant_message())
                 for tool_call in response.tool_calls:
+                    policy_error = self._tool_call_policy_error(
+                        tool_call.name,
+                        tool_call.arguments,
+                    )
+                    if policy_error is not None:
+                        result = json.dumps(
+                            {
+                                "ok": False,
+                                "tool": tool_call.name,
+                                "error": policy_error,
+                                "error_details": {
+                                    "code": "TOOL_POLICY_REJECTED",
+                                    "retryable": False,
+                                    "exception_type": "ToolPolicyError",
+                                },
+                            },
+                            ensure_ascii=False,
+                        )
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "content": result,
+                            }
+                        )
+                        self._emit_event(
+                            "agent.recovering",
+                            agent=self._name,
+                            iteration=iteration,
+                            tool=tool_call.name,
+                            tool_call_id=tool_call.id,
+                            error_code="TOOL_POLICY_REJECTED",
+                            retryable=False,
+                            message=(
+                                f"{self._name} 的工具调用不符合本轮变更策略，"
+                                "正在改用上一版结果"
+                            ),
+                        )
+                        logger.warning(
+                            "%s 拒绝不符合策略的工具调用 | iteration=%d | tool=%s",
+                            self._name,
+                            iteration,
+                            tool_call.name,
+                        )
+                        continue
                     argument_summary = summarize_tool_arguments(
                         tool_call.name,
                         tool_call.arguments,
@@ -468,4 +513,12 @@ class SimpleAgent:
         ]
         if missing:
             return "缺少字段：" + "、".join(missing)
+        return None
+
+    def _tool_call_policy_error(
+        self,
+        _tool_name: str,
+        _arguments: str,
+    ) -> Optional[str]:
+        """Allow subclasses to reject a call before its handler executes."""
         return None

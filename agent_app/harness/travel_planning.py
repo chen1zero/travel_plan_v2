@@ -13,8 +13,12 @@ from langgraph.graph import END, START, StateGraph
 
 from agent_app.harness.state import TravelPlanState
 from agent_app.harness.revision_validation import (
+    UNSUPPORTED_FACT_PREFIX,
+    normalize_terminal_hotel_return_routes,
+    sanitize_unsupported_plan_facts,
     validate_generated_plan,
     validate_revision_result,
+    validate_supported_plan_facts,
 )
 from agent_app.shared.logging import preview
 from agent_app.tools.errors import (
@@ -228,11 +232,23 @@ def analyze_request_changes(
         f"复用上一版：{'、'.join(reused_titles) or '无'}；"
         "行程合成节点始终运行"
     )
+    budget_only_increase = _is_budget_only_increase(
+        current_request,
+        previous_request,
+        instruction=instruction,
+    )
     return {
         "mode": "revision",
         "rerun": rerun,
         "reasons": reasons,
         "summary": summary,
+        "preservation": {
+            "budget_only_increase": budget_only_increase,
+            "preserve_selected_hotel": budget_only_increase,
+            "preserve_daily_itinerary": budget_only_increase,
+            "preserve_weather_summary": budget_only_increase,
+            "forbid_new_route_queries": budget_only_increase,
+        },
     }
 
 
@@ -251,6 +267,45 @@ def _initial_change_analysis(reason: str = "首次规划需要完整研究") -> 
         },
         "summary": "首次规划：并行执行景点、天气和住宿研究",
     }
+
+
+def _is_budget_only_increase(
+    current_request: Mapping[str, Any],
+    previous_request: Mapping[str, Any],
+    *,
+    instruction: str,
+) -> bool:
+    current_budget = current_request.get("budget_cny")
+    previous_budget = previous_request.get("budget_cny")
+    if (
+        isinstance(current_budget, bool)
+        or isinstance(previous_budget, bool)
+        or not isinstance(current_budget, (int, float))
+        or not isinstance(previous_budget, (int, float))
+        or current_budget <= previous_budget
+    ):
+        return False
+    unchanged_fields = (
+        "destination_city",
+        "destination_adcode",
+        "start_date",
+        "end_date",
+        "preferences",
+        "accommodation_type",
+    )
+    if any(
+        current_request.get(field) != previous_request.get(field)
+        for field in unchanged_fields
+    ):
+        return False
+    return not any(
+        pattern.search(instruction)
+        for pattern in (
+            _ATTRACTION_CHANGE_PATTERN,
+            _HOTEL_CHANGE_PATTERN,
+            _WEATHER_CHANGE_PATTERN,
+        )
+    )
 
 
 class TravelPlanningHarness:
@@ -627,17 +682,39 @@ class TravelPlanningHarness:
             )
 
         def synthesize() -> str:
-            result = run_planner(state["request"])
-            if state.get("revision_mode"):
-                errors = validate_revision_result(
-                    result,
-                    state.get("previous_plan", {}),
-                    state.get("request_data", {}),
+            def validation_errors(value: str) -> list[str]:
+                if state.get("revision_mode"):
+                    base_errors = validate_revision_result(
+                        value,
+                        state.get("previous_plan", {}),
+                        state.get("request_data", {}),
+                    )
+                elif state.get("request_data"):
+                    base_errors = validate_generated_plan(value)
+                else:
+                    return []
+                return [
+                    *base_errors,
+                    *validate_supported_plan_facts(
+                        value,
+                        state.get("attractions", ""),
+                        state.get("hotels", ""),
+                    ),
+                ]
+
+            result, normalization_notes = (
+                normalize_terminal_hotel_return_routes(
+                    run_planner(state["request"])
                 )
-            elif state.get("request_data"):
-                errors = validate_generated_plan(result)
-            else:
-                return result
+            )
+            if normalization_notes:
+                self._emit(
+                    "plan.validation",
+                    node="itinerary_synthesis",
+                    stage="planner",
+                    message="；".join(normalization_notes),
+                )
+            errors = validation_errors(result)
             if not errors:
                 return result
             feedback = "；".join(errors)
@@ -661,16 +738,36 @@ class TravelPlanningHarness:
                 "上一份规划结果未通过服务端验收。必须逐项修正以下问题，"
                 f"并重新输出完整计划 JSON：{feedback}"
             )
-            retried = run_planner(retry_request)
-            remaining_errors = (
-                validate_revision_result(
-                    retried,
-                    state.get("previous_plan", {}),
-                    state.get("request_data", {}),
+            retried, retry_normalization_notes = (
+                normalize_terminal_hotel_return_routes(
+                    run_planner(retry_request)
                 )
-                if state.get("revision_mode")
-                else validate_generated_plan(retried)
             )
+            if retry_normalization_notes:
+                self._emit(
+                    "plan.validation",
+                    node="itinerary_synthesis",
+                    stage="planner",
+                    message="；".join(retry_normalization_notes),
+                )
+            remaining_errors = validation_errors(retried)
+            if remaining_errors and any(
+                error.startswith(UNSUPPORTED_FACT_PREFIX)
+                for error in remaining_errors
+            ):
+                retried, sanitization_notes = sanitize_unsupported_plan_facts(
+                    retried,
+                    state.get("attractions", ""),
+                    state.get("hotels", ""),
+                )
+                if sanitization_notes:
+                    self._emit(
+                        "plan.validation",
+                        node="itinerary_synthesis",
+                        stage="planner",
+                        message="；".join(sanitization_notes),
+                    )
+                remaining_errors = validation_errors(retried)
             if remaining_errors:
                 raise RuntimeError(
                     "规划结果未通过行程质量检查："

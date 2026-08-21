@@ -423,10 +423,12 @@ class TravelPlanningHarnessTests(unittest.TestCase):
                     {
                         "day": 1,
                         "schedule": [{"place_name": "故宫博物院"}],
+                        "routes": [{"sequence": 1}],
                     },
                     {
                         "day": 2,
                         "schedule": [{"place_name": "故宫博物院"}],
+                        "routes": [{"sequence": 1}],
                     },
                 ]
             },
@@ -438,10 +440,12 @@ class TravelPlanningHarnessTests(unittest.TestCase):
                     {
                         "day": 1,
                         "schedule": [{"place_name": "故宫博物院"}],
+                        "routes": [{"sequence": 1}],
                     },
                     {
                         "day": 2,
                         "schedule": [{"place_name": "颐和园"}],
+                        "routes": [{"sequence": 1}],
                     },
                 ]
             },
@@ -477,6 +481,57 @@ class TravelPlanningHarnessTests(unittest.TestCase):
         )
         self.assertTrue(
             any(event_type == "plan.validation" for event_type, _ in events)
+        )
+
+    def test_initial_plan_retries_when_routes_do_not_cover_schedule(self):
+        calls = []
+        incomplete = json.dumps(
+            {
+                "daily_itinerary": [
+                    {
+                        "day": 1,
+                        "schedule": [
+                            {"place_name": "故宫博物院"},
+                            {"place_name": "景山公园"},
+                        ],
+                        "routes": [{"sequence": 1}],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+        corrected = json.dumps(
+            {
+                "daily_itinerary": [
+                    {
+                        "day": 1,
+                        "schedule": [
+                            {"place_name": "故宫博物院"},
+                            {"place_name": "景山公园"},
+                        ],
+                        "routes": [{"sequence": 1}, {"sequence": 2}],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+        harness = TravelPlanningHarness(
+            attraction_agent=_RecordingQueryAgent("attraction", "景点", calls),
+            weather_agent=_RecordingQueryAgent("weather", "天气", calls),
+            hotel_agent=_RecordingQueryAgent("hotel", "酒店", calls),
+            planner_agent=_SequencePlannerAgent([incomplete, corrected], calls),
+        )
+
+        result = harness.run(
+            "北京一日游", request_data={"destination_city": "北京"}
+        )
+
+        self.assertEqual(corrected, result)
+        planner_calls = [call for call in calls if call[0] == "planner"]
+        self.assertEqual(2, len(planner_calls))
+        self.assertIn(
+            "2 个日程地点，但只有 1 条路线",
+            planner_calls[1][1]["original_request"],
         )
 
     def test_research_nodes_execute_concurrently_before_synthesis(self):

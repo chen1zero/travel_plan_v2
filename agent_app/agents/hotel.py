@@ -41,6 +41,9 @@ maps_text_search({
 回复要求：
 - 只输出一个合法 JSON 对象，不要输出 Markdown、代码围栏或额外说明。
 - 最多返回 5 家酒店，按与住宿需求的匹配程度排序。
+- 必须逐项核对候选的 type 是否满足 accommodation_requirement。若工具结果中
+  没有任何匹配类型，禁止把其他类型描述为“符合要求”；可以保留备选，但必须
+  在 data_notes 明确写出“没有对应住宿类型候选，需要补充搜索或用户确认”。
 - name、address、type、poi_id、tel、location 只能来自工具结果；缺失时使用 null。
 - location 有值时拆分为 longitude 和 latitude 数字，不要保留为逗号字符串。
 - 工具未提供实时价格、评分或准确星级时必须使用 null，禁止编造。

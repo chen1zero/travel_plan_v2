@@ -8,8 +8,11 @@ import unittest
 from agent_app.api.schemas import TravelRequest
 from agent_app.api.services.follow_up import normalize_follow_up_request
 from agent_app.harness.revision_validation import (
+    normalize_terminal_hotel_return_routes,
+    sanitize_unsupported_plan_facts,
     validate_generated_plan,
     validate_revision_result,
+    validate_supported_plan_facts,
 )
 from agent_app.harness.travel_planning import analyze_request_changes
 from tests.test_api import _plan_payload
@@ -133,6 +136,10 @@ class FollowUpRequirementTests(unittest.TestCase):
         revised["daily_itinerary"][0]["routes"].append(
             deepcopy(revised["daily_itinerary"][0]["routes"][0])
         )
+        revised["daily_itinerary"][0]["routes"][1]["sequence"] = 2
+        revised["daily_itinerary"][0]["routes"][1]["route_id"] = (
+            "night-view-route"
+        )
         self.assertEqual(
             [],
             validate_revision_result(
@@ -198,6 +205,172 @@ class FollowUpRequirementTests(unittest.TestCase):
         self.assertEqual(1, len(errors))
         self.assertIn("同时出现在第 1 天和第 2 天", errors[0])
         self.assertIn("必须将后一次替换为不同景点", errors[0])
+
+    def test_plan_validator_rejects_incomplete_route_coverage(self):
+        plan = _plan_payload()
+        plan["daily_itinerary"][0]["schedule"].append(
+            {
+                **deepcopy(plan["daily_itinerary"][0]["schedule"][0]),
+                "schedule_item_id": "second-place",
+                "order": 2,
+                "place_name": "景山公园",
+            }
+        )
+
+        errors = validate_generated_plan(json.dumps(plan, ensure_ascii=False))
+
+        self.assertTrue(any("2 个日程地点" in error for error in errors))
+        self.assertTrue(any("只有 1 条路线" in error for error in errors))
+
+    def test_price_zero_requires_explicit_research_evidence(self):
+        plan = _plan_payload()
+        plan["daily_itinerary"][0]["estimated_cost_cny"]["tickets"] = 0
+        plan["budget_summary"]["breakdown"]["tickets"] = 0
+        attractions_without_price = {
+            "attractions": [{"name": "故宫博物院", "price_cny": None}]
+        }
+
+        errors = validate_supported_plan_facts(
+            json.dumps(plan, ensure_ascii=False),
+            attractions_without_price,
+            {"hotels": [{"name": "测试酒店"}]},
+        )
+
+        self.assertEqual(2, len(errors))
+        self.assertTrue(all("必须使用 null" in error for error in errors))
+
+    def test_explicit_zero_price_is_supported_but_wrong_value_is_not(self):
+        plan = _plan_payload()
+        plan["daily_itinerary"][0]["estimated_cost_cny"]["tickets"] = 0
+        plan["budget_summary"]["breakdown"]["tickets"] = 0
+        attractions = {
+            "attractions": [{"name": "故宫博物院", "price_cny": 0}]
+        }
+
+        self.assertEqual(
+            [],
+            validate_supported_plan_facts(
+                json.dumps(plan, ensure_ascii=False),
+                attractions,
+                {"hotels": [{"name": "测试酒店"}]},
+            ),
+        )
+        plan["daily_itinerary"][0]["estimated_cost_cny"]["tickets"] = 10
+        errors = validate_supported_plan_facts(
+            json.dumps(plan, ensure_ascii=False),
+            attractions,
+            {"hotels": [{"name": "测试酒店"}]},
+        )
+        self.assertTrue(any("与研究证据 0 不一致" in error for error in errors))
+
+    def test_sanitizer_nulls_only_unsupported_monetary_claims(self):
+        plan = _plan_payload()
+        plan["daily_itinerary"][0]["estimated_cost_cny"].update(
+            {"tickets": 0, "food": 80, "subtotal": 80}
+        )
+        plan["budget_summary"].update(
+            {"estimated_total": 80, "remaining": 1420}
+        )
+        plan["budget_summary"]["breakdown"].update(
+            {"tickets": 0, "food": 80}
+        )
+
+        sanitized, changes = sanitize_unsupported_plan_facts(
+            json.dumps(plan, ensure_ascii=False),
+            {"attractions": [{"name": "故宫博物院", "price_cny": None}]},
+            {"hotels": [{"name": "测试酒店"}]},
+        )
+        value = json.loads(sanitized)
+
+        self.assertTrue(changes)
+        costs = value["daily_itinerary"][0]["estimated_cost_cny"]
+        self.assertIsNone(costs["tickets"])
+        self.assertIsNone(costs["food"])
+        self.assertIsNone(costs["subtotal"])
+        self.assertIsNone(value["budget_summary"]["estimated_total"])
+        self.assertIsNone(value["budget_summary"]["remaining"])
+        self.assertEqual(
+            [],
+            validate_supported_plan_facts(
+                sanitized,
+                {"attractions": [{"name": "故宫博物院"}]},
+                {"hotels": [{"name": "测试酒店"}]},
+            ),
+        )
+
+    def test_normalizes_only_an_extra_terminal_hotel_return_route(self):
+        plan = _plan_payload()
+        return_route = deepcopy(plan["daily_itinerary"][0]["routes"][0])
+        return_route["route_id"] = "return-to-hotel"
+        return_route["sequence"] = 2
+        return_route["origin"] = deepcopy(return_route["destination"])
+        return_route["destination"] = {
+            "name": plan["selected_hotel"]["name"],
+            "address": plan["selected_hotel"]["address"],
+            "city": plan["request_summary"]["destination_city"],
+        }
+        plan["daily_itinerary"][0]["routes"].append(return_route)
+
+        normalized, notes = normalize_terminal_hotel_return_routes(
+            json.dumps(plan, ensure_ascii=False)
+        )
+        normalized_plan = json.loads(normalized)
+
+        self.assertEqual(1, len(normalized_plan["daily_itinerary"][0]["routes"]))
+        self.assertEqual(["第 1 天移除契约外的返酒店尾段"], notes)
+        self.assertEqual([], validate_generated_plan(normalized))
+
+    def test_does_not_trim_an_unrelated_extra_route(self):
+        plan = _plan_payload()
+        extra_route = deepcopy(plan["daily_itinerary"][0]["routes"][0])
+        extra_route["route_id"] = "unrelated-extra"
+        extra_route["sequence"] = 2
+        extra_route["destination"]["name"] = "其他地点"
+        plan["daily_itinerary"][0]["routes"].append(extra_route)
+
+        normalized, notes = normalize_terminal_hotel_return_routes(
+            json.dumps(plan, ensure_ascii=False)
+        )
+
+        self.assertEqual([], notes)
+        self.assertTrue(validate_generated_plan(normalized))
+
+    def test_budget_only_increase_must_preserve_hotel_and_itinerary(self):
+        previous = _plan_payload()
+        revised = deepcopy(previous)
+        revised["request_summary"]["budget_cny"] = 8000
+        revised["budget_summary"]["total_budget"] = 8000
+        revised["selected_hotel"]["name"] = "不应更换的酒店"
+        request = self._request("预算提高到 8000").model_dump(mode="json")
+        request["budget_cny"] = 8000
+
+        errors = validate_revision_result(
+            json.dumps(revised, ensure_ascii=False),
+            previous,
+            request,
+        )
+
+        self.assertTrue(any("selected_hotel 必须原样保留" in error for error in errors))
+        revised["selected_hotel"] = deepcopy(previous["selected_hotel"])
+        self.assertEqual(
+            [],
+            validate_revision_result(
+                json.dumps(revised, ensure_ascii=False),
+                previous,
+                request,
+            ),
+        )
+
+    def test_budget_only_increase_sets_planner_preservation_constraints(self):
+        request = self._request("预算提高到 8000")
+        current = request.model_dump(mode="json")
+        current["budget_cny"] = 8000
+        context = self._context(request)
+
+        analysis = analyze_request_changes(current, context)
+
+        self.assertTrue(analysis["preservation"]["budget_only_increase"])
+        self.assertTrue(analysis["preservation"]["forbid_new_route_queries"])
 
 
 if __name__ == "__main__":

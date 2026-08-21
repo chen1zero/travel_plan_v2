@@ -431,6 +431,16 @@ docker compose up --build -d
 python -m unittest discover -v
 ```
 
+LangSmith Eval 默认 v2 已包含 33 条版本化核心用例（v1 的 32 条仍保留），日常可离线运行：
+
+```bash
+.venv/bin/python -m evals.run
+```
+
+数据集、评分指标、发布门禁、LangSmith 同步和真实 LLM 实验步骤见
+[`evals/README.md`](./evals/README.md)。远端同步与实验默认被
+`RUN_LANGSMITH_EVALS=1` 保护，未明确允许发送数据时不会连接 LangSmith。
+
 `tests/test_weather_agent.py`、`tests/test_attraction_agent.py`、
 `tests/test_hotel_agent.py` 和 `tests/test_planner_agent.py` 分别包含
 天气、景点、酒店与行程规划专家的端到端测试，验证独立 LLM、对应 MCP

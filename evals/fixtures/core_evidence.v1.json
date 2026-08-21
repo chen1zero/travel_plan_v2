@@ -1,0 +1,42 @@
+{
+  "version": "core-evidence-v1",
+  "notice": "仅用于离线评估的冻结合成证据，不代表实时高德查询结果。价格、评分和票价未知时保持 null。",
+  "cities": {
+    "北京": {
+      "weather": {"day_weather": "晴间多云", "night_weather": "多云", "min_temperature_c": null, "max_temperature_c": null},
+      "hotels": [
+        {"name": "北京中轴舒适酒店", "address": "北京市东城区前门大街1号", "type": "舒适型", "price_cny_per_night": null, "location": {"longitude": 116.397, "latitude": 39.9}},
+        {"name": "北京城景酒店", "address": "北京市东城区东四大街8号", "type": "舒适型", "price_cny_per_night": null, "location": {"longitude": 116.417, "latitude": 39.924}}
+      ],
+      "attractions": [
+        {"name": "故宫博物院", "address": "北京市东城区景山前街4号", "poi_id": "BJ-A1", "price_cny": null, "rating": null, "location": {"longitude": 116.397, "latitude": 39.916}},
+        {"name": "天坛公园", "address": "北京市东城区天坛东里甲1号", "poi_id": "BJ-A2", "price_cny": null, "rating": null, "location": {"longitude": 116.407, "latitude": 39.882}},
+        {"name": "颐和园", "address": "北京市海淀区新建宫门路19号", "poi_id": "BJ-A3", "price_cny": null, "rating": null, "location": {"longitude": 116.273, "latitude": 39.999}},
+        {"name": "什刹海", "address": "北京市西城区前海西街", "poi_id": "BJ-A4", "price_cny": null, "rating": null, "location": {"longitude": 116.385, "latitude": 39.94}}
+      ]
+    },
+    "上海": {
+      "weather": {"day_weather": "多云", "night_weather": "多云", "min_temperature_c": null, "max_temperature_c": null},
+      "hotels": [
+        {"name": "上海人民广场舒适酒店", "address": "上海市黄浦区西藏中路10号", "type": "舒适型", "price_cny_per_night": null, "location": {"longitude": 121.475, "latitude": 31.232}},
+        {"name": "上海外滩城市酒店", "address": "上海市黄浦区中山东一路20号", "type": "舒适型", "price_cny_per_night": null, "location": {"longitude": 121.49, "latitude": 31.239}}
+      ],
+      "attractions": [
+        {"name": "上海自然博物馆", "address": "上海市静安区北京西路510号", "poi_id": "SH-A1", "price_cny": null, "rating": null, "location": {"longitude": 121.462, "latitude": 31.237}},
+        {"name": "上海科技馆", "address": "上海市浦东新区世纪大道2000号", "poi_id": "SH-A2", "price_cny": null, "rating": null, "location": {"longitude": 121.541, "latitude": 31.219}},
+        {"name": "外滩", "address": "上海市黄浦区中山东一路", "poi_id": "SH-A3", "price_cny": null, "rating": null, "location": {"longitude": 121.49, "latitude": 31.241}}
+      ]
+    },
+    "广州": {
+      "weather": {"day_weather": "阵雨", "night_weather": "多云", "min_temperature_c": null, "max_temperature_c": null},
+      "hotels": [
+        {"name": "广州越秀经济酒店", "address": "广州市越秀区北京路10号", "type": "经济型", "price_cny_per_night": null, "location": {"longitude": 113.27, "latitude": 23.129}},
+        {"name": "广州珠江便捷酒店", "address": "广州市越秀区沿江中路8号", "type": "经济型", "price_cny_per_night": null, "location": {"longitude": 113.279, "latitude": 23.114}}
+      ],
+      "attractions": [
+        {"name": "越秀公园", "address": "广州市越秀区解放北路988号", "poi_id": "GZ-A1", "price_cny": null, "rating": null, "location": {"longitude": 113.265, "latitude": 23.142}},
+        {"name": "沙面岛", "address": "广州市荔湾区沙面南街", "poi_id": "GZ-A2", "price_cny": null, "rating": null, "location": {"longitude": 113.239, "latitude": 23.109}}
+      ]
+    }
+  }
+}

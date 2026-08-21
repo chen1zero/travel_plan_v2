@@ -1,6 +1,7 @@
 """LLM-powered travel itinerary planning specialist."""
 
 import json
+from typing import Optional
 
 from agent_app.agents.base import (
     LLM,
@@ -19,6 +20,13 @@ PLANNER_SYSTEM_PROMPT = """\
 3. 每天从酒店或明确起点出发；对所有相邻地点之间的移动逐段查询路线。
 4. 只能使用三个专家输出和路线工具提供的事实。不得编造地址、天气、
    酒店价格、门票、评分、路线距离或交通时间。
+   数字 0 也属于价格事实；用户要求“优先免费景点”只代表筛选偏好，不能证明
+   候选免费。景点研究未明确提供 price_cny=0 时，门票和相关预算分项必须为
+   null，并说明需在出发前核验。
+5. 必须核对酒店研究中候选的 type 与用户 accommodation_type。存在匹配候选时
+   selected_hotel 必须从匹配类型中选择；不存在匹配候选时允许给出明确标注的
+   备选，但必须在 request_summary.unresolved_fields 和 data_notes 中写明住宿
+   类型约束尚未解决，selection_reason 不得声称备选符合要求。
 
 修订模式：
 - 你还会收到 previous_plan 和 change_analysis。必须以 previous_plan 为
@@ -32,8 +40,15 @@ PLANNER_SYSTEM_PROMPT = """\
   并补齐新增相邻路段；新增景点不得与任意日期已有景点重复；夜景或晚上
   要求必须把新增景点安排在 17:00 之后。
 - “换个酒店”必须选择与 previous_plan 不同的酒店并更新受影响路线；住宿
-  类型和预算在 current_request 中变化时，request_summary、selected_hotel、
-  budget_summary 必须同步反映新约束。
+  类型变化时，request_summary、selected_hotel 和受影响路线必须同步反映
+  新约束。预算变化时必须更新 request_summary 和 budget_summary；只有上一版
+  酒店已明确不满足新预算或用户明确要求换酒店时，才允许更换 selected_hotel。
+- change_analysis.preservation 是服务端生成的硬约束。若
+  budget_only_increase=true，本轮只是提高预算：selected_hotel、
+  daily_itinerary、weather_summary 必须逐字段原样复制 previous_plan，只更新
+  预算相关摘要；forbid_new_route_queries=true 时严禁调用
+  compare_route_options，因为全部已有路线都必须复用。酒店研究节点重跑只表示
+  刷新了候选信息，不等于授权更换仍然符合要求的上一版酒店。
 - 最终仍输出完整计划 JSON，而不是差异；不得输出修订说明或 Markdown。
 
 路线工具调用格式：
@@ -50,6 +65,10 @@ compare_route_options({
   公共交通坐标版工具；你只能使用 compare_route_options 返回的汇总结果。
 - 某种方式 unavailable 时，将 available 设为 false，距离和时间设为 null，
   error 保留工具错误；禁止自行估算。
+- 若一条路线的所有方式都 unavailable，仍须保留地点、坐标、访问顺序和该路线；
+  在 data_notes 透明说明路线服务不可用，并在 booking_and_safety_tips 提醒用户
+  出发前用实时地图复查交通、为该日预留机动时间。不得把服务故障写成确定的
+  距离、时长或交通方式。
 - 公交的 distance_km 只有在工具能从具体换乘路段汇总真实总里程时才有值；
   walking_distance_km 表示公交方案中的接驳步行距离，不能将其写成公交总里程；
   transfer_count 表示换乘次数；transit_type 必须原样保留，用 subway、bus、
@@ -221,6 +240,7 @@ class PlannerAgent(SimpleAgent):
             name="PlannerAgent",
             max_iterations=max_iterations,
         )
+        self._forbid_route_queries = False
 
     def run(
         self,
@@ -258,9 +278,43 @@ class PlannerAgent(SimpleAgent):
                     "change_analysis": change_analysis or {},
                 }
             )
+            preservation = (change_analysis or {}).get("preservation")
+            if isinstance(preservation, dict) and preservation.get(
+                "budget_only_increase"
+            ):
+                materials["revision_acceptance_constraints"] = [
+                    "本轮只提高预算，selected_hotel 必须原样复制 previous_plan",
+                    "daily_itinerary 和 weather_summary 必须原样复制 previous_plan",
+                    "不得调用 compare_route_options，全部已有路线直接复用",
+                    "只更新 request_summary.budget_cny、budget_summary.total_budget"
+                    "及必要的预算说明",
+                ]
             instruction = "请基于上一版计划增量修订并输出完整旅行计划：\n"
         else:
             instruction = "请根据以下规划资料生成完整旅行计划：\n"
-        return super().run(
-            instruction + json.dumps(materials, ensure_ascii=False)
+        previous_policy = self._forbid_route_queries
+        self._forbid_route_queries = bool(
+            revision_mode
+            and isinstance((change_analysis or {}).get("preservation"), dict)
+            and (change_analysis or {})["preservation"].get(
+                "forbid_new_route_queries"
+            )
         )
+        try:
+            return super().run(
+                instruction + json.dumps(materials, ensure_ascii=False)
+            )
+        finally:
+            self._forbid_route_queries = previous_policy
+
+    def _tool_call_policy_error(
+        self,
+        tool_name: str,
+        _arguments: str,
+    ) -> Optional[str]:
+        if self._forbid_route_queries and tool_name == "compare_route_options":
+            return (
+                "本轮仅提高预算，地点和顺序均未变化；"
+                "必须直接复用 previous_plan 中的已有路线，不得重新查询"
+            )
+        return None
