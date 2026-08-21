@@ -199,7 +199,16 @@ class AttractionSearchAgentTests(unittest.TestCase):
                 ),
                 LLMResponse(
                     finish_reason="stop",
-                    content=result(["景点一", "景点二", "景点三"]),
+                    content=result(
+                        [
+                            "景点一",
+                            "景点二",
+                            "景点三",
+                            "景点四",
+                            "景点五",
+                            "景点六",
+                        ]
+                    ),
                 ),
             ]
         )
@@ -211,8 +220,8 @@ class AttractionSearchAgentTests(unittest.TestCase):
 
         response = agent.run("2099-08-01 至 2099-08-03 去北京")
 
-        self.assertIn("景点三", response)
-        self.assertIn("至少返回 3 个", llm.messages[0][1]["content"])
+        self.assertIn("景点六", response)
+        self.assertIn("至少返回 6 个", llm.messages[0][1]["content"])
         self.assertIn("不同景点候选不足", llm.messages[2][-1]["content"])
 
 
