@@ -50,6 +50,15 @@ PLANNER_SYSTEM_PROMPT = """\
   compare_route_options，因为全部已有路线都必须复用。酒店研究节点重跑只表示
   刷新了候选信息，不等于授权更换仍然符合要求的上一版酒店。
 - 最终仍输出完整计划 JSON，而不是差异；不得输出修订说明或 Markdown。
+- API 多轮修订还会收到 session_memory。其 latest_anchor.full_plan 就是
+  previous_plan；latest_anchor 中的结构化条件、三类研究结果和版本信息是
+  上一版权威短期记忆，本轮顶层 attractions、weather、hotels 若与锚点不同，
+  表示对应研究已重跑，应作为本轮事实来源。all_user_messages 是本 Session
+  的全部已成功用户消息，
+  revision_ledger 是服务端确定性计算的历史变化，recent_assistant_plans 是
+  预算允许时保留的旧版完整计划。不得把其中的历史要求误当成本轮新增要求；
+  冲突时以 current_request 和 original_request 为本轮指令，以 latest_anchor
+  为修订基线。
 
 路线工具调用格式：
 compare_route_options({
@@ -251,6 +260,7 @@ class PlannerAgent(SimpleAgent):
         previous_plan: dict | None = None,
         change_analysis: dict | None = None,
         revision_mode: bool = False,
+        session_memory: dict | None = None,
     ) -> str:
         """Create an itinerary from the original request and expert data."""
         materials = {
@@ -271,13 +281,22 @@ class PlannerAgent(SimpleAgent):
         if revision_mode:
             if not previous_plan:
                 raise ValueError("PlannerAgent 修订模式缺少 previous_plan")
-            materials.update(
-                {
-                    "mode": "revision",
-                    "previous_plan": previous_plan,
-                    "change_analysis": change_analysis or {},
-                }
-            )
+            revision_materials = {
+                "mode": "revision",
+                "change_analysis": change_analysis or {},
+            }
+            if session_memory:
+                revision_materials.update(
+                    {
+                        "session_memory": session_memory,
+                        "previous_plan_reference": (
+                            "session_memory.latest_anchor.full_plan"
+                        ),
+                    }
+                )
+            else:
+                revision_materials["previous_plan"] = previous_plan
+            materials.update(revision_materials)
             preservation = (change_analysis or {}).get("preservation")
             if isinstance(preservation, dict) and preservation.get(
                 "budget_only_increase"

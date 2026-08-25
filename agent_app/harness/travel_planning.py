@@ -50,6 +50,7 @@ class PlanningAgent(Protocol):
         previous_plan: Optional[Dict[str, Any]] = None,
         change_analysis: Optional[Dict[str, Any]] = None,
         revision_mode: bool = False,
+        session_memory: Optional[Dict[str, Any]] = None,
     ) -> str:
         ...
 
@@ -679,6 +680,7 @@ class TravelPlanningHarness:
                 previous_plan=state.get("previous_plan", {}),
                 change_analysis=state.get("change_analysis", {}),
                 revision_mode=True,
+                session_memory=state.get("session_memory", {}),
             )
 
         def synthesize() -> str:
@@ -791,6 +793,7 @@ class TravelPlanningHarness:
         request_data: Optional[Mapping[str, Any]] = None,
         previous_plan: Optional[Dict[str, Any]] = None,
         previous_context: Optional[Dict[str, Any]] = None,
+        session_memory: Optional[Dict[str, Any]] = None,
         trace_metadata: Optional[Mapping[str, Any]] = None,
     ) -> str:
         """Invoke the compiled graph and return the synthesized plan."""
@@ -838,6 +841,7 @@ class TravelPlanningHarness:
                 "revision_mode": revision_mode,
                 "previous_plan": previous_plan or {},
                 "previous_context": previous_context or {},
+                "session_memory": session_memory or {},
             },
             config={
                 "run_name": "Travel Planning Harness",

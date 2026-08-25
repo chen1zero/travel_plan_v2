@@ -138,16 +138,21 @@ class _FakeQueryAgent:
 
 
 class _FakePlannerAgent:
+    def __init__(self, memory_sink=None):
+        self._memory_sink = memory_sink
+
     def run(self, **_inputs):
+        if self._memory_sink is not None:
+            self._memory_sink.append(_inputs.get("session_memory"))
         return json.dumps(_plan_payload(), ensure_ascii=False)
 
 
-def _fake_harness(callback):
+def _fake_harness(callback, memory_sink=None):
     return TravelPlanningHarness(
         attraction_agent=_FakeQueryAgent("景点研究结果"),
         weather_agent=_FakeQueryAgent("天气研究结果"),
         hotel_agent=_FakeQueryAgent("住宿研究结果"),
-        planner_agent=_FakePlannerAgent(),
+        planner_agent=_FakePlannerAgent(memory_sink),
         progress_callback=callback,
     )
 
@@ -213,10 +218,11 @@ class TravelPlanningAPITests(unittest.TestCase):
             sse_heartbeat_seconds=0.05,
         )
         self.harness_calls = 0
+        self.planner_memories = []
 
         def counted_harness(callback):
             self.harness_calls += 1
-            return _fake_harness(callback)
+            return _fake_harness(callback, self.planner_memories)
 
         self.app = create_app(
             api_settings=api_settings,
@@ -442,6 +448,17 @@ class TravelPlanningAPITests(unittest.TestCase):
         self.assertEqual(2, envelope["revision"])
         self.assertEqual(original["session_id"], envelope["session_id"])
         self.assertEqual(original["plan_id"], envelope["previous_plan_id"])
+        memory = self.planner_memories[-1]
+        self.assertEqual("layered_l2", memory["memory_mode"])
+        self.assertEqual(
+            original["plan_id"],
+            memory["latest_anchor"]["version"]["plan_id"],
+        )
+        self.assertEqual(1, len(memory["all_user_messages"]))
+        self.assertEqual(
+            "每天十点后出发，节奏放松",
+            memory["current_request"]["additional_requirements"],
+        )
 
         session = self.client.get(
             f"/api/sessions/{original['session_id']}"

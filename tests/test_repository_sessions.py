@@ -147,6 +147,14 @@ class RepositorySessionMigrationTests(unittest.TestCase):
             turns = repository.get_session_turns(plan["session_id"])
             self.assertEqual(1, len(turns))
             self.assertEqual("task_legacy", turns[0]["task_id"])
+            messages = repository.list_session_messages(plan["session_id"])
+            self.assertEqual(
+                ["user", "assistant"],
+                [message["role"] for message in messages],
+            )
+            self.assertTrue(
+                all(message["state"] == "committed" for message in messages)
+            )
 
 
 if __name__ == "__main__":
