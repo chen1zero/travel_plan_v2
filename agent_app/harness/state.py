@@ -13,6 +13,7 @@ class TravelPlanState(TypedDict, total=False):
     revision_mode: bool
     previous_plan: Dict[str, Any]
     previous_context: Dict[str, Any]
+    session_memory: Dict[str, Any]
     change_analysis: Dict[str, Any]
     attractions: str
     weather: str

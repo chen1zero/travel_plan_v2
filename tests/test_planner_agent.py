@@ -140,6 +140,39 @@ class PlannerAgentTests(unittest.TestCase):
         self.assertEqual(previous_plan, payload["previous_plan"])
         self.assertEqual(analysis, payload["change_analysis"])
 
+    def test_revision_mode_uses_l2_memory_anchor_without_plan_duplication(self):
+        llm = _FakeLLM(
+            [LLMResponse(finish_reason="stop", content="{}")]
+        )
+        agent = PlannerAgent(llm)
+        previous_plan = {"selected_hotel": {"name": "上一版酒店"}}
+        memory = {
+            "memory_mode": "layered_l2",
+            "all_user_messages": [{"sequence": 1, "text": "首次要求"}],
+            "revision_ledger": [],
+            "recent_assistant_plans": [],
+            "latest_anchor": {"full_plan": previous_plan},
+            "current_request": {"additional_requirements": "换个酒店"},
+        }
+
+        agent.run(
+            original_request="换个酒店",
+            attractions="景点",
+            weather="天气",
+            hotels="酒店",
+            previous_plan=previous_plan,
+            revision_mode=True,
+            session_memory=memory,
+        )
+
+        payload = json.loads(llm.messages[0][1]["content"].split("：\n", 1)[1])
+        self.assertEqual(memory, payload["session_memory"])
+        self.assertNotIn("previous_plan", payload)
+        self.assertEqual(
+            "session_memory.latest_anchor.full_plan",
+            payload["previous_plan_reference"],
+        )
+
     def test_budget_only_revision_adds_hard_acceptance_constraints(self):
         llm = _FakeLLM([LLMResponse(finish_reason="stop", content="{}")])
         agent = PlannerAgent(llm)

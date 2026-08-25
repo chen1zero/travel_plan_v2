@@ -52,6 +52,7 @@ from agent_app.api.services.task_manager import (
     AgentFactory,
     TaskManager,
 )
+from agent_app.api.services.memory import MemoryPolicy, SessionMemoryManager
 from agent_app.harness.travel_planning import harness_topology
 from agent_app.harness.revision_validation import (
     validate_itinerary_uniqueness,
@@ -102,6 +103,21 @@ def create_app(
         max_workers=resolved_api_settings.max_workers,
         task_timeout_seconds=(
             resolved_api_settings.task_timeout_seconds
+        ),
+        memory_manager=SessionMemoryManager(
+            resolved_repository,
+            MemoryPolicy(
+                context_window_tokens=(
+                    resolved_api_settings.memory_context_window_tokens
+                ),
+                input_limit_tokens=(
+                    resolved_api_settings.memory_input_limit_tokens
+                ),
+                target_tokens=resolved_api_settings.memory_target_tokens,
+                recent_assistant_tokens=(
+                    resolved_api_settings.memory_recent_assistant_tokens
+                ),
+            ),
         ),
     )
 

@@ -24,6 +24,10 @@ class APISettings:
     auth_cookie_name: str = "travel_session"
     auth_session_days: int = 7
     auth_cookie_secure: bool = False
+    memory_context_window_tokens: int = 1_000_000
+    memory_input_limit_tokens: int = 650_000
+    memory_target_tokens: int = 500_000
+    memory_recent_assistant_tokens: int = 150_000
 
     @classmethod
     def from_env(
@@ -81,6 +85,26 @@ class APISettings:
                 source,
                 "AUTH_COOKIE_SECURE",
                 False,
+            ),
+            memory_context_window_tokens=_positive_int(
+                source,
+                "MEMORY_CONTEXT_WINDOW_TOKENS",
+                1_000_000,
+            ),
+            memory_input_limit_tokens=_positive_int(
+                source,
+                "MEMORY_INPUT_LIMIT_TOKENS",
+                650_000,
+            ),
+            memory_target_tokens=_positive_int(
+                source,
+                "MEMORY_TARGET_TOKENS",
+                500_000,
+            ),
+            memory_recent_assistant_tokens=_positive_int(
+                source,
+                "MEMORY_RECENT_ASSISTANT_TOKENS",
+                150_000,
             ),
         )
 

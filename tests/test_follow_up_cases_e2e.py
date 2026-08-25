@@ -44,6 +44,7 @@ class _RevisionPlanner:
         previous_plan=None,
         change_analysis=None,
         revision_mode=False,
+        session_memory=None,
     ):
         self._calls.append(
             ("planner", original_request, deepcopy(change_analysis))

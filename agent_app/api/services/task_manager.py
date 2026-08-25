@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from agent_app.api.repository import SQLitePlanRepository
 from agent_app.api.schemas import TravelPlanDocument, TravelRequest
 from agent_app.api.services.follow_up import normalize_follow_up_request
+from agent_app.api.services.memory import SessionMemoryManager
 from agent_app.harness.revision_validation import (
     validate_itinerary_uniqueness,
 )
@@ -40,6 +41,7 @@ class RunnableTravelHarness(Protocol):
         request_data: Optional[Mapping[str, Any]] = None,
         previous_plan: Optional[Dict[str, Any]] = None,
         previous_context: Optional[Dict[str, Any]] = None,
+        session_memory: Optional[Dict[str, Any]] = None,
         trace_metadata: Optional[Mapping[str, Any]] = None,
     ) -> str:
         ...
@@ -60,6 +62,7 @@ class TaskManager:
         agent_factory: AgentFactory,
         max_workers: int = 2,
         task_timeout_seconds: int = 600,
+        memory_manager: Optional[SessionMemoryManager] = None,
     ) -> None:
         self._repository = repository
         self._agent_factory = agent_factory
@@ -68,6 +71,9 @@ class TaskManager:
             thread_name_prefix="travel-plan",
         )
         self._task_timeout_seconds = task_timeout_seconds
+        self._memory_manager = memory_manager or SessionMemoryManager(
+            repository
+        )
         self._futures: Dict[str, Future[None]] = {}
 
     def restore_incomplete_tasks(self) -> None:
@@ -179,6 +185,14 @@ class TaskManager:
                 "task.started",
                 "旅行规划任务已开始",
             )
+            session_memory = None
+            if previous_envelope is not None:
+                session_memory = self._memory_manager.build(
+                    task_id=task_id,
+                    session_id=str(task["session_id"]),
+                    previous_envelope=previous_envelope,
+                    current_request=request.model_dump(mode="json"),
+                )
 
             def progress_callback(
                 event_type: str,
@@ -244,6 +258,7 @@ class TaskManager:
                     if previous_envelope
                     else None
                 ),
+                session_memory=session_memory,
                 trace_metadata={
                     "task_id": task_id,
                     "session_id": task["session_id"],
@@ -257,6 +272,18 @@ class TaskManager:
                     "start_date": request.start_date.isoformat(),
                     "end_date": request.end_date.isoformat(),
                     "source": "travel-api",
+                    "memory_mode": (
+                        session_memory.get("memory_mode")
+                        if session_memory
+                        else "initial"
+                    ),
+                    "memory_input_tokens": (
+                        session_memory.get("memory_stats", {}).get(
+                            "estimated_input_tokens"
+                        )
+                        if session_memory
+                        else 0
+                    ),
                 },
             )
             if timed_out.is_set():

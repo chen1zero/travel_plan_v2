@@ -112,8 +112,52 @@ class SQLitePlanRepository:
                     FOREIGN KEY(task_id) REFERENCES tasks(task_id)
                 );
 
+                CREATE TABLE IF NOT EXISTS session_messages (
+                    message_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    task_id TEXT,
+                    plan_id TEXT,
+                    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+                    message_type TEXT NOT NULL,
+                    content_text TEXT,
+                    state TEXT NOT NULL CHECK(
+                        state IN ('pending', 'committed', 'failed')
+                    ),
+                    token_count INTEGER,
+                    tokenizer_id TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(session_id, sequence),
+                    UNIQUE(task_id, role),
+                    FOREIGN KEY(session_id) REFERENCES sessions(session_id),
+                    FOREIGN KEY(task_id) REFERENCES tasks(task_id),
+                    FOREIGN KEY(plan_id) REFERENCES plans(plan_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS memory_assemblies (
+                    assembly_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    input_tokens INTEGER NOT NULL,
+                    retained_assistant_count INTEGER NOT NULL,
+                    omitted_assistant_count INTEGER NOT NULL,
+                    anchor_plan_id TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(session_id) REFERENCES sessions(session_id),
+                    FOREIGN KEY(task_id) REFERENCES tasks(task_id),
+                    FOREIGN KEY(anchor_plan_id) REFERENCES plans(plan_id)
+                );
+
                 CREATE INDEX IF NOT EXISTS events_task_id_event_id
                 ON events(task_id, event_id);
+
+                CREATE INDEX IF NOT EXISTS idx_session_messages_order
+                ON session_messages(session_id, sequence);
+
+                CREATE INDEX IF NOT EXISTS idx_memory_assemblies_task
+                ON memory_assemblies(task_id, created_at);
                 """
             )
             self._ensure_column(
@@ -220,6 +264,7 @@ class SQLitePlanRepository:
                 """
             )
             self._migrate_legacy_sessions(connection)
+            self._backfill_session_messages(connection)
             connection.execute("PRAGMA optimize")
 
     @staticmethod
@@ -239,6 +284,66 @@ class SQLitePlanRepository:
             connection.execute(
                 f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
             )
+
+    @staticmethod
+    def _next_message_sequence(
+        connection: sqlite3.Connection,
+        session_id: str,
+    ) -> int:
+        row = connection.execute(
+            """
+            SELECT COALESCE(MAX(sequence), 0) AS maximum
+            FROM session_messages
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        return int(row["maximum"]) + 1
+
+    @staticmethod
+    def _insert_message_if_missing(
+        connection: sqlite3.Connection,
+        *,
+        session_id: str,
+        task_id: str,
+        plan_id: Optional[str],
+        role: str,
+        message_type: str,
+        content_text: Optional[str],
+        state: str,
+        created_at: str,
+    ) -> None:
+        existing = connection.execute(
+            """
+            SELECT 1 FROM session_messages
+            WHERE task_id = ? AND role = ?
+            """,
+            (task_id, role),
+        ).fetchone()
+        if existing is not None:
+            return
+        connection.execute(
+            """
+            INSERT INTO session_messages (
+                message_id, session_id, sequence, task_id, plan_id,
+                role, message_type, content_text, state, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"msg_{uuid4().hex}",
+                session_id,
+                SQLitePlanRepository._next_message_sequence(
+                    connection, session_id
+                ),
+                task_id,
+                plan_id,
+                role,
+                message_type,
+                content_text,
+                state,
+                created_at,
+            ),
+        )
 
     @staticmethod
     def _migrate_legacy_sessions(
@@ -292,6 +397,67 @@ class SQLitePlanRepository:
                     WHERE plan_id = ?
                     """,
                     (session_id, context_json, current_plan_id),
+                )
+
+    @staticmethod
+    def _backfill_session_messages(
+        connection: sqlite3.Connection,
+    ) -> None:
+        """Create an auditable transcript for databases created pre-memory."""
+        rows = connection.execute(
+            """
+            SELECT t.*, p.plan_id AS completed_plan_id,
+                   p.source_type, p.generated_at
+            FROM tasks t
+            LEFT JOIN plans p ON p.task_id = t.task_id
+            WHERE t.session_id IS NOT NULL
+            ORDER BY t.session_id, t.created_at, t.task_id
+            """
+        ).fetchall()
+        for row in rows:
+            session_id = str(row["session_id"])
+            task_id = str(row["task_id"])
+            plan_id = row["completed_plan_id"]
+            task_status = str(row["status"])
+            state = (
+                "committed"
+                if task_status == "completed" and plan_id
+                else "failed"
+                if task_status == "failed"
+                else "pending"
+            )
+            request_data = json.loads(row["request_json"])
+            source_type = row["source_type"] if plan_id else None
+            user_message_type = (
+                str(source_type)
+                if source_type in {"manual_edit", "fork"}
+                else "requirement"
+            )
+            assistant_message_type = _message_type_for_source(source_type)
+            SQLitePlanRepository._insert_message_if_missing(
+                connection,
+                session_id=session_id,
+                task_id=task_id,
+                plan_id=plan_id,
+                role="user",
+                message_type=user_message_type,
+                content_text=_turn_user_text(request_data),
+                state=state,
+                created_at=str(row["created_at"]),
+            )
+            if plan_id:
+                SQLitePlanRepository._insert_message_if_missing(
+                    connection,
+                    session_id=session_id,
+                    task_id=task_id,
+                    plan_id=str(plan_id),
+                    role="assistant",
+                    message_type=assistant_message_type,
+                    content_text=None,
+                    state="committed",
+                    created_at=str(
+                        row["generated_at"] or row["updated_at"]
+                    ),
                 )
 
     def create_task(
@@ -394,6 +560,17 @@ class SQLitePlanRepository:
                     now,
                 ),
             )
+            self._insert_message_if_missing(
+                connection,
+                session_id=session_id,
+                task_id=task_id,
+                plan_id=None,
+                role="user",
+                message_type="requirement",
+                content_text=_turn_user_text(request_data),
+                state="pending",
+                created_at=now,
+            )
             row = connection.execute(
                 "SELECT * FROM tasks WHERE task_id = ?",
                 (task_id,),
@@ -455,16 +632,37 @@ class SQLitePlanRepository:
         retryable: Optional[bool] = None,
         error_id: Optional[str] = None,
     ) -> bool:
-        return self._update_active_task(
-            task_id,
-            status="failed",
-            error_message=message,
-            error_code=error_code,
-            error_retryable=(
-                None if retryable is None else int(retryable)
-            ),
-            error_id=error_id,
-        )
+        now = utc_now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """
+                UPDATE tasks
+                SET status = 'failed', error_message = ?,
+                    error_code = ?, error_retryable = ?, error_id = ?,
+                    updated_at = ?
+                WHERE task_id = ? AND status IN ('queued', 'running')
+                """,
+                (
+                    message,
+                    error_code,
+                    None if retryable is None else int(retryable),
+                    error_id,
+                    now,
+                    task_id,
+                ),
+            )
+            if cursor.rowcount == 1:
+                connection.execute(
+                    """
+                    UPDATE session_messages
+                    SET state = 'failed'
+                    WHERE task_id = ? AND role = 'user'
+                      AND state = 'pending'
+                    """,
+                    (task_id,),
+                )
+            return cursor.rowcount == 1
 
     def complete_task(
         self,
@@ -559,6 +757,26 @@ class SQLitePlanRepository:
                     generated_at,
                     session_id,
                 ),
+            )
+            connection.execute(
+                """
+                UPDATE session_messages
+                SET state = 'committed', plan_id = ?
+                WHERE task_id = ? AND role = 'user'
+                  AND state = 'pending'
+                """,
+                (plan_id, task_id),
+            )
+            self._insert_message_if_missing(
+                connection,
+                session_id=session_id,
+                task_id=task_id,
+                plan_id=plan_id,
+                role="assistant",
+                message_type="plan",
+                content_text=None,
+                state="committed",
+                created_at=generated_at,
             )
         return self.get_plan(plan_id)
 
@@ -783,6 +1001,179 @@ class SQLitePlanRepository:
             )
         return turns
 
+    def get_memory_turns(
+        self,
+        session_id: str,
+        through_plan_id: str,
+    ) -> List[Dict[str, Any]]:
+        """Return committed user/assistant pairs through an immutable plan."""
+        with self._connect() as connection:
+            target = connection.execute(
+                """
+                SELECT revision FROM plans
+                WHERE plan_id = ? AND session_id = ?
+                """,
+                (through_plan_id, session_id),
+            ).fetchone()
+            if target is None:
+                raise SessionContextError("记忆锚点不属于指定会话")
+            rows = connection.execute(
+                """
+                SELECT m.*, t.request_json, p.revision, p.source_type,
+                       p.generated_at, p.previous_plan_id,
+                       CASE WHEN m.role = 'assistant'
+                            THEN p.plan_json END AS memory_plan_json,
+                       CASE WHEN m.role = 'assistant'
+                            THEN p.context_json END AS memory_context_json
+                FROM session_messages m
+                JOIN tasks t ON t.task_id = m.task_id
+                JOIN plans p ON p.plan_id = m.plan_id
+                WHERE m.session_id = ? AND m.state = 'committed'
+                  AND p.revision <= ?
+                ORDER BY m.sequence
+                """,
+                (session_id, int(target["revision"])),
+            ).fetchall()
+        return [
+            {
+                "message_id": row["message_id"],
+                "sequence": int(row["sequence"]),
+                "task_id": row["task_id"],
+                "plan_id": row["plan_id"],
+                "role": row["role"],
+                "message_type": row["message_type"],
+                "content_text": row["content_text"],
+                "request": json.loads(row["request_json"]),
+                "revision": int(row["revision"]),
+                "source_type": row["source_type"],
+                "generated_at": row["generated_at"],
+                "previous_plan_id": row["previous_plan_id"],
+                "plan": (
+                    json.loads(row["memory_plan_json"])
+                    if row["memory_plan_json"] is not None
+                    else None
+                ),
+                "context": (
+                    json.loads(row["memory_context_json"] or "{}")
+                    if row["memory_context_json"] is not None
+                    else {}
+                ),
+            }
+            for row in rows
+        ]
+
+    def list_session_messages(
+        self,
+        session_id: str,
+    ) -> List[Dict[str, Any]]:
+        """Return transcript metadata for tests and internal diagnostics."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM session_messages
+                WHERE session_id = ?
+                ORDER BY sequence
+                """,
+                (session_id,),
+            ).fetchall()
+        return [
+            {
+                "message_id": row["message_id"],
+                "session_id": row["session_id"],
+                "sequence": int(row["sequence"]),
+                "task_id": row["task_id"],
+                "plan_id": row["plan_id"],
+                "role": row["role"],
+                "message_type": row["message_type"],
+                "content_text": row["content_text"],
+                "state": row["state"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    def record_memory_assembly(
+        self,
+        *,
+        session_id: str,
+        task_id: str,
+        mode: str,
+        input_tokens: int,
+        retained_assistant_count: int,
+        omitted_assistant_count: int,
+        anchor_plan_id: str,
+        metadata: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        assembly_id = f"memory_{uuid4().hex}"
+        created_at = utc_now()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO memory_assemblies (
+                    assembly_id, session_id, task_id, mode,
+                    input_tokens, retained_assistant_count,
+                    omitted_assistant_count, anchor_plan_id,
+                    metadata_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    assembly_id,
+                    session_id,
+                    task_id,
+                    mode,
+                    input_tokens,
+                    retained_assistant_count,
+                    omitted_assistant_count,
+                    anchor_plan_id,
+                    json.dumps(dict(metadata or {}), ensure_ascii=False),
+                    created_at,
+                ),
+            )
+        return {
+            "assembly_id": assembly_id,
+            "session_id": session_id,
+            "task_id": task_id,
+            "mode": mode,
+            "input_tokens": input_tokens,
+            "retained_assistant_count": retained_assistant_count,
+            "omitted_assistant_count": omitted_assistant_count,
+            "anchor_plan_id": anchor_plan_id,
+            "metadata": dict(metadata or {}),
+            "created_at": created_at,
+        }
+
+    def list_memory_assemblies(
+        self,
+        task_id: str,
+    ) -> List[Dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM memory_assemblies
+                WHERE task_id = ? ORDER BY created_at, assembly_id
+                """,
+                (task_id,),
+            ).fetchall()
+        return [
+            {
+                "assembly_id": row["assembly_id"],
+                "session_id": row["session_id"],
+                "task_id": row["task_id"],
+                "mode": row["mode"],
+                "input_tokens": int(row["input_tokens"]),
+                "retained_assistant_count": int(
+                    row["retained_assistant_count"]
+                ),
+                "omitted_assistant_count": int(
+                    row["omitted_assistant_count"]
+                ),
+                "anchor_plan_id": row["anchor_plan_id"],
+                "metadata": json.loads(row["metadata_json"] or "{}"),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
     def fork_session(
         self,
         session_id: str,
@@ -876,6 +1267,28 @@ class SQLitePlanRepository:
                     f"已从历史版本 V{int(source['revision'])} 创建新规划",
                     plan_id,
                 ),
+            )
+            self._insert_message_if_missing(
+                connection,
+                session_id=new_session_id,
+                task_id=task_id,
+                plan_id=plan_id,
+                role="user",
+                message_type="fork",
+                content_text=_turn_user_text(request_data),
+                state="committed",
+                created_at=now,
+            )
+            self._insert_message_if_missing(
+                connection,
+                session_id=new_session_id,
+                task_id=task_id,
+                plan_id=plan_id,
+                role="assistant",
+                message_type="fork",
+                content_text=None,
+                state="committed",
+                created_at=now,
             )
         return self.get_plan(plan_id, user_id)
 
@@ -1011,6 +1424,28 @@ class SQLitePlanRepository:
                     "已保存手动调整后的新版本",
                     next_plan_id,
                 ),
+            )
+            self._insert_message_if_missing(
+                connection,
+                session_id=str(row["session_id"]),
+                task_id=edit_task_id,
+                plan_id=next_plan_id,
+                role="user",
+                message_type="manual_edit",
+                content_text=_turn_user_text(request_data),
+                state="committed",
+                created_at=generated_at,
+            )
+            self._insert_message_if_missing(
+                connection,
+                session_id=str(row["session_id"]),
+                task_id=edit_task_id,
+                plan_id=next_plan_id,
+                role="assistant",
+                message_type="manual_edit",
+                content_text=None,
+                state="committed",
+                created_at=generated_at,
             )
         return self.get_plan(next_plan_id, user_id)
 
@@ -1228,6 +1663,14 @@ def _turn_user_text(request_data: Dict[str, Any]) -> str:
     start = request_data.get("start_date") or ""
     end = request_data.get("end_date") or ""
     return f"规划 {city} {start} 至 {end} 的旅行行程".strip()
+
+
+def _message_type_for_source(source_type: Any) -> str:
+    if source_type == "manual_edit":
+        return "manual_edit"
+    if source_type == "fork":
+        return "fork"
+    return "plan" if source_type else "requirement"
 
 
 def _derive_context_from_plan(

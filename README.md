@@ -140,6 +140,10 @@ python3 -m uv tool install amap-mcp-server
 - `TRAVEL_API_DB_PATH`：任务和计划数据库，默认 `var/travel_plan.db`
 - `TRAVEL_API_MAX_WORKERS`：并发旅行规划任务数，默认 `2`
 - `TRAVEL_API_TASK_TIMEOUT_SECONDS`：单个规划任务上限，默认 `600`
+- `MEMORY_CONTEXT_WINDOW_TOKENS`：模型上下文窗口，默认 `1000000`
+- `MEMORY_INPUT_LIMIT_TOKENS`：L2 记忆输入硬上限，默认 `650000`
+- `MEMORY_TARGET_TOKENS`：L2 记忆装配目标，默认 `500000`
+- `MEMORY_RECENT_ASSISTANT_TOKENS`：旧版完整计划保留预算，默认 `150000`
 - `AUTH_COOKIE_NAME`：登录 Cookie 名称，默认 `travel_session`
 - `AUTH_SESSION_DAYS`：登录有效天数，默认 `7`
 - `AUTH_COOKIE_SECURE`：生产 HTTPS 环境设为 `true`，本地 HTTP 保持 `false`
